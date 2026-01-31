@@ -1,5 +1,5 @@
 flask
 pymongo
-dnspython
 certifi
 gunicorn
+requests
