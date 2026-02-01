@@ -1,180 +1,153 @@
 import os
-import datetime
 import uuid
-import logging
-from flask import Flask, request, jsonify, render_template_string
-import pymongo
-import certifi
-
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import datetime
+from flask import Flask, render_template_string, request, jsonify, session, redirect
+from pymongo import MongoClient
 
 app = Flask(__name__)
+app.secret_key = "RENDER_ADMIN_PANEL_KEY"
 
-# --- AYARLAR ---
+# MONGODB BAĞLANTISI
 MONGO_URI = os.environ.get("MONGO_URI")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "YASIN_BABA_33")
-TELEGRAM_LINK = "https://t.me/yasin33"
-V = "82.0" # Sürüm zorlayıcı
+ADMIN_PASSWORD = "Ata_Yasin33"
 
-# --- DB ---
-db = None
-try:
-    if MONGO_URI:
-        client = pymongo.MongoClient(MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=5000)
-        db = client['mega_leech']
-        users_col, jobs_col, deliveries_col, accounts_col = db['users'], db['jobs'], db['deliveries'], db['accounts']
-        logger.info(f"✅ DB Connected V{V}")
-except Exception as e: logger.error(f"❌ DB Error: {e}")
+client = MongoClient(MONGO_URI)
+db = client['mega_leech']
+queue = db['queue']
+accounts_col = db['accounts'] # Mega Hesapları Burada
+proxies_col = db['proxies']   # Senin Eklediğin Proxyler Burada
 
-def get_tr_time(): return (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%d.%m %H:%M")
-def get_now_ts(): return datetime.datetime.utcnow().timestamp()
+# --- HTML ŞABLONU ---
+HTML = """
+<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8"><title>M-CLOUD YÖNETİM</title>
+<script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-gray-900 text-white font-sans min-h-screen">
+    <nav class="p-4 border-b border-gray-700 flex justify-between bg-gray-800">
+        <div class="font-bold text-xl text-blue-500">M-CLOUD <span class="text-white">PANEL</span></div>
+        {% if session.admin %}<a href="/logout" class="text-red-400 text-sm">Çıkış</a>{% endif %}
+    </nav>
 
-# --- CSS (CYBERPUNK FULL) ---
-SHARED_CSS = f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700&family=Roboto+Mono&display=swap');
-:root {{ --bg: #050505; --card: #111; --border: #222; --primary: #00ff9d; --text: #fff; }}
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ background: var(--bg); color: var(--text); font-family: 'Rajdhani', sans-serif; padding: 20px; display: flex; flex-direction: column; align-items: center; }}
-.container {{ width: 100%; max-width: 650px; }}
-h1 {{ color: var(--primary); text-align: center; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 20px; text-shadow: 0 0 15px var(--primary); }}
-.card {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 15px; position: relative; }}
-.card::after {{ content: ''; position: absolute; left: 0; top: 0; width: 4px; height: 100%; background: var(--primary); }}
-input, textarea {{ width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 5px; margin-bottom: 10px; outline: none; font-family: 'Roboto Mono', monospace; }}
-.btn {{ width: 100%; background: var(--primary); color: #000; font-weight: 800; padding: 15px; border: none; border-radius: 5px; cursor: pointer; text-transform: uppercase; transition: 0.2s; }}
-.btn:hover {{ background: #fff; box-shadow: 0 0 20px var(--primary); }}
-.stat-row {{ display: flex; justify-content: space-between; margin-bottom: 10px; }}
-.badge {{ background: #222; padding: 5px 10px; border-radius: 4px; font-size: 0.8em; }}
-a {{ color: var(--primary); text-decoration: none; }}
-</style>
+    <div class="container mx-auto p-6">
+        {% if not session.admin %}
+        <div class="max-w-md mx-auto bg-gray-800 p-8 rounded shadow-lg mt-10">
+            <h2 class="text-center text-xl font-bold mb-4">YÖNETİCİ GİRİŞİ</h2>
+            <form method="POST" action="/login">
+                <input type="password" name="password" class="w-full p-3 bg-gray-700 rounded mb-4 text-white" placeholder="Şifre">
+                <button class="w-full bg-blue-600 py-2 rounded font-bold">GİRİŞ</button>
+            </form>
+        </div>
+        {% else %}
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <div class="bg-gray-800 p-6 rounded shadow border border-gray-700">
+                <h3 class="font-bold text-lg mb-4 text-green-400">MEGA HESAPLARI ({{ acc_count }})</h3>
+                <form method="POST" action="/admin/add_account" class="mb-4">
+                    <textarea name="accounts" class="w-full p-2 bg-gray-900 rounded text-sm h-32" placeholder="email:sifre formatında alt alta yazın..."></textarea>
+                    <button class="bg-green-600 px-4 py-2 rounded text-sm mt-2 w-full font-bold">HESAPLARI YÜKLE</button>
+                </form>
+                <div class="h-48 overflow-y-auto bg-gray-900 p-2 rounded text-xs">
+                    {% for acc in accounts %}
+                    <div class="flex justify-between border-b border-gray-800 py-1">
+                        <span class="{{ 'text-red-500' if acc.status == 'QUOTA' else 'text-gray-300' }}">{{ acc.email }}</span>
+                        <span>{{ acc.status }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                <a href="/admin/reset_accounts" class="block text-center text-yellow-500 text-xs mt-2">Tüm Hesapları Sıfırla (Kota Aç)</a>
+            </div>
+
+            <div class="bg-gray-800 p-6 rounded shadow border border-gray-700">
+                <h3 class="font-bold text-lg mb-4 text-purple-400">ÖZEL PROXY LİSTESİ ({{ proxy_count }})</h3>
+                <form method="POST" action="/admin/add_proxy" class="mb-4">
+                    <textarea name="proxies" class="w-full p-2 bg-gray-900 rounded text-sm h-32" placeholder="ip:port formatında alt alta yazın..."></textarea>
+                    <button class="bg-purple-600 px-4 py-2 rounded text-sm mt-2 w-full font-bold">PROXYLERİ YÜKLE</button>
+                </form>
+                <div class="h-48 overflow-y-auto bg-gray-900 p-2 rounded text-xs font-mono">
+                    {% for p in proxies %}
+                    <div class="border-b border-gray-800 py-1">{{ p.ip }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+
+        </div>
+
+        <div class="mt-8 bg-gray-800 p-6 rounded shadow border border-gray-700">
+            <h3 class="font-bold text-lg mb-4 text-blue-400">YENİ İNDİRME GÖREVİ</h3>
+            <input type="text" id="link" class="w-full p-3 bg-gray-900 rounded mb-2" placeholder="Mega Linki...">
+            <button onclick="addTask()" class="bg-blue-600 px-6 py-3 rounded font-bold w-full">BAŞLAT</button>
+            <div id="status" class="mt-4 text-sm text-gray-400"></div>
+        </div>
+
+        {% endif %}
+    </div>
+    <script>
+        async function addTask() {
+            let l = document.getElementById('link').value;
+            let r = await fetch('/api/task', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({link:l})});
+            let d = await r.json();
+            document.getElementById('status').innerText = d.success ? "Görev Worker'a iletildi! ID: " + d.taskId : "Hata!";
+        }
+    </script>
+</body></html>
 """
 
-# --- HTML TEMPLATES ---
-HTML_LOGIN = f"<!DOCTYPE html><html><head><title>GİRİŞ</title>{SHARED_CSS}</head><body style='justify-content:center'><div class='card' style='width:400px;text-align:center'><h1>YAEL SAVER</h1><input id='k' type='password' placeholder='ANAHTAR'><button class='btn' onclick='go()'>SİSTEME SIZ</button><br><br><a href='{TELEGRAM_LINK}'>ANAHTAR SATIN AL</a></div><script>function go(){{location.href='/panel?k='+document.getElementById('k').value}}</script></body></html>"
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    return redirect('/admin') # Direkt admin paneline at
 
-HTML_PANEL = f"""
-<!DOCTYPE html><html><head><title>PANEL</title>{SHARED_CSS}</head><body>
-<div class="container"><h1>YAEL SAVER</h1>
-<div id="dash" class="card">Yükleniyor...</div>
-<div class="card"><h3>YENİ İNDİRME</h3><input id="link" placeholder="MEGA Linki..."><button class="btn" onclick="add()">İŞLEMİ BAŞLAT</button></div>
-<div id="jobs"></div></div>
-<script>
-const k=new URLSearchParams(window.location.search).get('k')||localStorage.getItem('ukey');
-if(k)localStorage.setItem('ukey',k); else location.href='/';
-function load(){{
-    fetch('/api/data',{{headers:{{'X-Key':k}}}}).then(r=>r.json()).then(d=>{{
-        if(d.error) return document.getElementById('dash').innerHTML='HATA: '+d.error;
-        let u=d.user; document.getElementById('dash').innerHTML=`<div class='stat-row'><b>${{u.name}}</b> <span style='color:#0f0'>${{u.days}} GÜN</span></div><div class='stat-row'><span>KOTA: ${{u.used.toFixed(2)}} / ${{u.total}} GB</span></div>`;
-        let h=''; d.jobs.forEach(j=>{{ h+=`<div class='card' style='padding:15px'><div class='stat-row'><b>#${{j.id}}</b><small>${{j.date}}</small></div><div style='font-size:0.8em;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>${{j.link}}</div><div class='stat-row' style='margin-top:10px'><span>${{j.log||'Sırada'}}</span> ${{j.status=='TAMAMLANDI'?'<a href="/teslimat/'+j.did+'">İNDİR</a>':j.status}}</div></div>` }});
-        document.getElementById('jobs').innerHTML=h;
-    }})
-}}
-function add(){{ fetch('/api/add',{{method:'POST',headers:{{'X-Key':k,'Content-Type':'application/json'}},body:JSON.stringify({{link:document.getElementById('link').value}})}}).then(r=>r.json()).then(d=>{{alert(d.msg);load()}})}}
-setInterval(load,4000); load();
-</script></body></html>"""
+@app.route('/login', methods=['POST'])
+def login():
+    if request.form.get('password') == ADMIN_PASSWORD:
+        session['admin'] = True
+    return redirect('/admin')
 
-HTML_ADMIN = f"""
-<!DOCTYPE html><html><head><title>ADMİN</title>{SHARED_CSS}</head><body>
-<div class="container"><h1>PATRON PANELİ</h1>
-<div id="stats" class="card">Yükleniyor...</div>
-<div class="card"><h3>HESAP HAVUZU</h3><textarea id="accs" rows="4" placeholder="email:sifre"></textarea><button class="btn" onclick="addAcc()">MEGA HESAPLARI YÜKLE</button></div>
-<div class="card" style="border-color:#0f0"><h3>LİSANS OLUŞTUR</h3>
-<input id="u_n" placeholder="Müşteri Adı"><input id="u_k" placeholder="Özel Key (Opsiyonel)">
-<div style="display:flex;gap:10px"><input type="number" id="u_g" placeholder="GB"><input type="number" id="u_d" placeholder="GÜN"></div>
-<button class="btn" onclick="addUser()">LİSANSI OLUŞTUR</button></div>
-<div id="users"></div></div>
-<script>
-const p=prompt("Admin Şifresi:");
-function load(){{
-    fetch('/api/admin/data?p='+p).then(r=>r.json()).then(d=>{{
-        if(d.error) return alert("Şifre Yanlış!");
-        document.getElementById('stats').innerHTML=`Aktif Mega: ${{d.stats.acc_active}} | Toplam Müşteri: ${{d.users.length}}`;
-        let h=''; d.users.forEach(u=>{{ h+=`<div class='card'><b>${{u.name}}</b> (${{u.key}})<br>${{u.used.toFixed(1)}}/${{u.total}} GB | ${{u.days}} Gün <button onclick="del('${{u.key}}')" style='background:red;color:white;border:none;padding:5px;cursor:pointer'>SİL</button></div>` }});
-        document.getElementById('users').innerHTML=h;
-    }})
-}}
-function addAcc(){{ fetch('/api/admin/add_acc',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{p,accs:document.getElementById('accs').value}})}}).then(load) }}
-function addUser(){{ fetch('/api/admin/add_user',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{p,name:document.getElementById('u_n').value,key:document.getElementById('u_k').value,gb:document.getElementById('u_g').value,days:document.getElementById('u_d').value}})}}).then(load) }}
-function del(k){{ if(confirm('Sil?')) fetch('/api/admin/del_user',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{p,key:k}})}}).then(load) }}
-load();
-</script></body></html>"""
-
-# --- API ROUTES ---
-@app.route('/')
-def home(): return render_template_string(HTML_LOGIN)
-@app.route('/panel')
-def panel(): return render_template_string(HTML_PANEL)
 @app.route('/admin')
-def admin(): return render_template_string(HTML_ADMIN)
-@app.route('/teslimat/<id>')
-def deliv(id): d=deliveries_col.find_one({{"id":id}}); return render_template_string(d['html']) if d else "HATA"
+def admin():
+    accs = list(accounts_col.find())
+    pxs = list(proxies_col.find())
+    return render_template_string(HTML, accounts=accs, proxies=pxs, acc_count=len(accs), proxy_count=len(pxs), session=session)
 
-@app.route('/api/data')
-def api_data():
-    k=request.headers.get('X-Key'); u=users_col.find_one({{"key":k}})
-    if not u: return jsonify({{"error":"Key Yok"}})
-    jobs=list(jobs_col.find({{"user_key":k}},{{'_id':0}}).sort("_id",-1).limit(10))
-    days=int((u['expire_date']-get_now_ts())/86400)
-    return jsonify({{"user":{{"name":u['name'],"total":u['quota_gb'],"used":u.get('used_gb',0),"days":days if days>0 else 0}},"jobs":jobs}})
+@app.route('/admin/add_account', methods=['POST'])
+def add_acc():
+    if not session.get('admin'): return redirect('/')
+    raw = request.form.get('accounts', '')
+    for line in raw.split('\n'):
+        if ':' in line:
+            email, pwd = line.strip().split(':', 1)
+            # Eğer hesap yoksa ekle
+            if not accounts_col.find_one({"email": email}):
+                accounts_col.insert_one({"email": email, "password": pwd, "status": "ACTIVE", "last_used": None})
+    return redirect('/admin')
 
-@app.route('/api/add', methods=['POST'])
-def api_add():
-    k=request.headers.get('X-Key'); u=users_col.find_one({{"key":k}})
-    if not u or get_now_ts()>u['expire_date']: return jsonify({{"msg":"Süre Bitti"}})
-    jobs_col.insert_one({{"job_id":str(uuid.uuid4())[:8],"user_key":k,"link":request.json.get('link'),"status":"SIRADA","date":get_tr_time()}})
-    return jsonify({{"msg":"Başlatıldı 🚀"}})
+@app.route('/admin/add_proxy', methods=['POST'])
+def add_px():
+    if not session.get('admin'): return redirect('/')
+    raw = request.form.get('proxies', '')
+    proxies_col.delete_many({}) # Öncekileri temizle (İstersen kaldırırsın)
+    for line in raw.split('\n'):
+        if line.strip():
+            proxies_col.insert_one({"ip": line.strip()})
+    return redirect('/admin')
 
-@app.route('/api/worker/get_job')
-def w_get():
-    j=jobs_col.find_one({{"status":"SIRADA"}})
-    if not j: return jsonify({{"found":False}})
-    acc=accounts_col.find_one({{"status":"ACTIVE"}})
-    if not acc: return jsonify({{"found":False}})
-    jobs_col.update_one({{"job_id":j['job_id']}},{{"$set":{{"status":"ISLENIYOR"}}}})
-    return jsonify({{"found":True,"job":j['job_id'],"link":j['link'],"acc":{{"email":acc['email'],"pass":acc['pass']}}}})
+@app.route('/admin/reset_accounts', methods=['GET'])
+def reset_accs():
+    if not session.get('admin'): return redirect('/')
+    accounts_col.update_many({}, {"$set": {"status": "ACTIVE"}})
+    return redirect('/admin')
 
-@app.route('/api/worker/done', methods=['POST'])
-def w_done():
-    d=request.json; s=d.get('error') or "TAMAMLANDI"
-    if not d.get('error'):
-        did=str(uuid.uuid4())[:8]; deliveries_col.insert_one({{"id":did,"html":d['html']}})
-        jobs_col.update_one({{"job_id":d['id']}},{{"$set":{{"status":s,"delivery_id":did}}}})
-        job=jobs_col.find_one({{"job_id":d['id']}})
-        if job: users_col.update_one({{"key":job['user_key']}},{{"$inc":{{"used_gb":float(d.get('size',0))}}}})
-    else: jobs_col.update_one({{"job_id":d['id']}},{{"$set":{{"status":s}}}})
-    return jsonify({{"ok":True}})
+@app.route('/api/task', methods=['POST'])
+def api_task():
+    data = request.json
+    tid = str(uuid.uuid4())
+    queue.insert_one({"task_id": tid, "link": data['link'], "status": "SIRADA", "log": "Worker bekleniyor..."})
+    return jsonify({"success": True, "taskId": tid})
 
-@app.route('/api/admin/data')
-def ad_d():
-    if request.args.get('p')!=ADMIN_PASSWORD: return jsonify({{"error":"Auth"}})
-    u_list=[]; now=get_now_ts()
-    for u in users_col.find():
-        days=int((u['expire_date']-now)/86400)
-        u_list.append({{"name":u['name'],"key":u['key'],"total":u['quota_gb'],"used":u.get('used_gb',0),"days":days if days>0 else 0}})
-    return jsonify({{"stats":{{"acc_active":accounts_col.count_documents({{"status":"ACTIVE"}})}},"users":u_list}})
+@app.route('/api/status/<tid>')
+def status(tid): return jsonify(queue.find_one({"task_id": tid}, {"_id": 0}))
 
-@app.route('/api/admin/add_acc',methods=['POST'])
-def ad_aa():
-    if request.json.get('p')!=ADMIN_PASSWORD: return jsonify({{"msg":"Err"}})
-    for l in request.json['accs'].split('\n'):
-        if ':' in l: e,p=l.split(':',1); accounts_col.update_one({{"email":e.strip()}},{{"$set":{{"pass":p.strip(),"status":"ACTIVE"}}}},upsert=True)
-    return jsonify({{"msg":"OK"}})
-
-@app.route('/api/admin/add_user',methods=['POST'])
-def ad_au():
-    d=request.json; 
-    if d.get('p')!=ADMIN_PASSWORD: return jsonify({{"msg":"Err"}})
-    k=d.get('key') or str(uuid.uuid4())[:8]; exp=get_now_ts()+(int(d.get('days',30))*86400)
-    users_col.insert_one({{"name":d.get('name'),"key":k,"quota_gb":float(d.get('gb',50)),"used_gb":0,"expire_date":exp}})
-    return jsonify({{"msg":f"Key: {k}"}})
-
-@app.route('/api/admin/del_user',methods=['POST'])
-def ad_du():
-    if request.json.get('p')!=ADMIN_PASSWORD: return jsonify({{"msg":"Err"}})
-    users_col.delete_one({{"key":request.json.get('key')}})
-    return jsonify({{"msg":"OK"}})
+@app.route('/logout')
+def logout(): session.clear(); return redirect('/')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    app.run(host='0.0.0.0', port=10000)
