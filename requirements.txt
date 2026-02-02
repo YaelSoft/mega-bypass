@@ -1,5 +1,4 @@
 flask
 pymongo
-certifi
-gunicorn
 requests
+gunicorn
