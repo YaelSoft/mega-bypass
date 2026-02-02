@@ -1,280 +1,422 @@
 import os
 import uuid
-import time
-import pymongo
-from flask import Flask, render_template_string, request, jsonify, session, redirect
+import datetime
+import requests
+import json
+from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
 from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 app = Flask(__name__)
-app.secret_key = "COMMANDER_V55_SECRET"
+app.secret_key = os.urandom(24)
 
 # ==================== AYARLAR ====================
-# Render Environment Variables kısmına MONGO_URI eklemeyi unutma!
 MONGO_URI = os.environ.get("MONGO_URI")
-ADMIN_PASSWORD = "YASIN_BABA_123" # Admin şifren
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "Ata_Yasin536373")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+REPO_OWNER = os.environ.get("REPO_OWNER")
+REPO_NAME = os.environ.get("REPO_NAME")
 
-# ==================== DB BAĞLANTISI ====================
-if not MONGO_URI:
-    print("❌ HATA: MONGO_URI EKSİK! Render ayarlarına ekle.")
-
+# DB Bağlantısı
 client = MongoClient(MONGO_URI)
 db = client['mega_leech']
-queue = db['queue']
-accounts_col = db['accounts']
-proxies_col = db['proxies']
+queue_col = db['queue']
+licenses_col = db['licenses']
 
-# ==================== HTML ARAYÜZ (BASİT VE GÜÇLÜ) ====================
+# ==================== GITHUB TETİKLEYİCİ (MOTOR) ====================
+def trigger_github(link, task_id):
+    if not GITHUB_TOKEN or not REPO_OWNER:
+        return False, "GitHub Ayarları Eksik!"
+
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/dispatches"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {
+        "event_type": "indir_kocum",
+        "client_payload": {"link": link, "task_id": task_id}
+    }
+    
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(data), timeout=10)
+        if resp.status_code == 204:
+            return True, "GitHub Başlatıldı!"
+        else:
+            return False, f"GitHub Hatası: {resp.text}"
+    except Exception as e:
+        return False, str(e)
+
+# ==================== HTML TASARIM (DARK MODE - VIP) ====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MEGA COMMANDER V55</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <title>MEGA VIP DOWNLOADER</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        body { background-color: #0f172a; color: white; font-family: sans-serif; }
-        .log-box { font-family: 'Courier New', monospace; font-size: 13px; }
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1e293b; }
-        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .form-control, .form-select { background-color: #2c2c2c; border: 1px solid #444; color: #fff; }
+        .form-control:focus { background-color: #2c2c2c; color: #fff; border-color: #0d6efd; box-shadow: none; }
+        .btn-primary { background-color: #0d6efd; border: none; }
+        .btn-danger { background-color: #dc3545; }
+        .status-badge { padding: 5px 10px; border-radius: 4px; font-size: 0.85em; font-weight: bold; }
+        .badge-sırada { background-color: #ffc107; color: #000; }
+        .badge-isleniyor { background-color: #0d6efd; color: #fff; animation: pulse 1.5s infinite; }
+        .badge-tamamlandi { background-color: #198754; color: #fff; }
+        .badge-hata { background-color: #dc3545; color: #fff; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        .navbar { background-color: #1e1e1e; border-bottom: 1px solid #333; }
+        .log-box { background: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; max-height: 150px; overflow-y: auto; font-size: 12px; }
+        .nav-tabs .nav-link { color: #aaa; }
+        .nav-tabs .nav-link.active { background-color: #2c2c2c; color: #fff; border-color: #333; }
     </style>
 </head>
-<body class="min-h-screen p-4 md:p-8">
+<body>
 
-    {% if not session.logged_in %}
-    <div class="flex items-center justify-center h-screen">
-        <form action="/login" method="POST" class="bg-slate-800 p-8 rounded-xl shadow-2xl w-96 border border-slate-700">
-            <h2 class="text-2xl font-bold mb-6 text-center text-blue-400"><i class="fa-solid fa-shield-halved"></i> GİRİŞ</h2>
-            <input type="password" name="password" class="w-full p-3 bg-slate-900 border border-slate-600 rounded mb-4 text-white" placeholder="Şifre" required>
-            <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded transition">GİRİŞ YAP</button>
-        </form>
+<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+  <div class="container">
+    <a class="navbar-brand" href="#"><i class="fas fa-cloud-download-alt"></i> MEGA VIP</a>
+    <div class="d-flex">
+        {% if session.get('is_admin') %}
+            <span class="badge bg-danger me-3 align-self-center">YÖNETİCİ MODU</span>
+            <a href="/logout" class="btn btn-sm btn-outline-light">Çıkış</a>
+        {% elif session.get('license_key') %}
+            <span class="badge bg-success me-3 align-self-center">LİSANS: {{ session['license_key'] }}</span>
+            <a href="/logout" class="btn btn-sm btn-outline-light">Çıkış</a>
+        {% endif %}
     </div>
-    {% else %}
+  </div>
+</nav>
 
-    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        <div class="lg:col-span-2 space-y-6">
-            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl font-bold text-green-400"><i class="fa-solid fa-cloud-arrow-down"></i> İNDİRME PANELİ</h2>
-                    <a href="/logout" class="text-sm text-slate-400 hover:text-white">Çıkış</a>
-                </div>
-                
-                <div class="flex gap-2 mb-4">
-                    <input type="text" id="megaLink" class="flex-grow p-4 bg-slate-900 border border-slate-600 rounded-lg text-white focus:border-blue-500 outline-none" placeholder="https://mega.nz/...">
-                    <button onclick="startTask()" id="startBtn" class="bg-green-600 hover:bg-green-700 px-8 rounded-lg font-bold transition">BAŞLAT</button>
-                </div>
+<div class="container">
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
 
-                <div id="logContainer" class="hidden">
-                    <div class="bg-black rounded-t-lg p-2 flex justify-between items-center border-b border-slate-800">
-                        <span class="text-xs text-slate-400">CANLI LOGLAR</span>
-                        <div class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
+    {% if not session.get('license_key') and not session.get('is_admin') %}
+    <div class="row justify-content-center mt-5">
+        <div class="col-md-6">
+            <div class="card p-4">
+                <h3 class="text-center mb-4">Sisteme Giriş</h3>
+                <form method="POST" action="/login">
+                    <div class="mb-3">
+                        <label>Lisans Anahtarı veya Yönetici Şifresi</label>
+                        <input type="text" name="auth_key" class="form-control" placeholder="Anahtar giriniz..." required>
                     </div>
-                    <div id="logs" class="log-box bg-black/80 h-64 overflow-y-auto p-4 text-green-400 space-y-1 rounded-b-lg border border-slate-800"></div>
-                </div>
-
-                <div id="resultArea" class="hidden mt-6 text-center bg-green-900/20 p-6 rounded-xl border border-green-500/30">
-                    <h3 class="text-2xl font-bold text-white mb-2">DOSYA HAZIR!</h3>
-                    <a id="dlButton" href="#" class="inline-block bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg transition my-4">
-                        <i class="fa-solid fa-download"></i> İNDİR
-                    </a>
-                    <button onclick="location.reload()" class="block mx-auto text-slate-400 text-sm hover:text-white">Yeni İşlem</button>
-                </div>
-            </div>
-
-            <div class="bg-red-900/20 p-4 rounded-xl border border-red-500/30 flex justify-between items-center">
-                <div>
-                    <h3 class="font-bold text-red-400">SİSTEM KİLİTLENDİ Mİ?</h3>
-                    <p class="text-xs text-slate-400">Loglar akmıyorsa veya sistem donduysa buna bas.</p>
-                </div>
-                <a href="/reset" class="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-bold text-sm shadow-lg shadow-red-600/20">
-                    <i class="fa-solid fa-skull"></i> SİSTEMİ SIFIRLA (RESET)
-                </a>
-            </div>
-        </div>
-
-        <div class="space-y-6">
-            <div class="grid grid-cols-2 gap-4">
-                <div class="bg-slate-800 p-4 rounded-xl text-center border-t-4 border-blue-500">
-                    <div class="text-3xl font-bold">{{ acc_count }}</div>
-                    <div class="text-xs text-slate-400">HESAP</div>
-                </div>
-                <div class="bg-slate-800 p-4 rounded-xl text-center border-t-4 border-purple-500">
-                    <div class="text-3xl font-bold">{{ proxy_count }}</div>
-                    <div class="text-xs text-slate-400">PROXY</div>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 p-5 rounded-xl border border-slate-700">
-                <h3 class="font-bold text-sm mb-2 text-slate-300">HESAP EKLE</h3>
-                <form action="/add_acc" method="POST">
-                    <textarea name="data" class="w-full bg-slate-900 p-2 text-xs h-20 rounded border border-slate-600 text-white mb-2" placeholder="email:sifre"></textarea>
-                    <button class="w-full bg-blue-600 py-2 rounded text-sm font-bold">EKLE</button>
-                </form>
-            </div>
-
-            <div class="bg-slate-800 p-5 rounded-xl border border-slate-700">
-                <h3 class="font-bold text-sm mb-2 text-slate-300">PROXY EKLE</h3>
-                <form action="/add_proxy" method="POST">
-                    <textarea name="data" class="w-full bg-slate-900 p-2 text-xs h-20 rounded border border-slate-600 text-white mb-2" placeholder="http://user:pass@ip:port"></textarea>
-                    <button class="w-full bg-purple-600 py-2 rounded text-sm font-bold">EKLE</button>
+                    <button type="submit" class="btn btn-primary w-100">Giriş Yap</button>
                 </form>
             </div>
         </div>
     </div>
 
-    <script>
-        let taskId = null;
-        let timer = null;
+    {% else %}
+    
+    <ul class="nav nav-tabs mb-3" id="myTab" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home" type="button">🚀 İndirici</button>
+        </li>
+        {% if session.get('is_admin') %}
+        <li class="nav-item">
+            <button class="nav-link" id="admin-tab" data-bs-toggle="tab" data-bs-target="#admin" type="button">🛡️ Admin Paneli</button>
+        </li>
+        {% endif %}
+    </ul>
 
-        async function startTask() {
-            const link = document.getElementById('megaLink').value;
-            if(!link) return alert("Link boş olamaz!");
+    <div class="tab-content" id="myTabContent">
+        
+        <div class="tab-pane fade show active" id="home">
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card p-3">
+                        <h5><i class="fas fa-plus-circle"></i> Yeni İşlem</h5>
+                        <form method="POST" action="/add_task">
+                            <div class="mb-3">
+                                <label>Mega Linki</label>
+                                <input type="text" name="link" class="form-control" placeholder="https://mega.nz/..." required>
+                            </div>
+                            <div class="d-grid">
+                                <button type="submit" class="btn btn-primary">İndirmeyi Başlat</button>
+                            </div>
+                        </form>
+                        {% if not session.get('is_admin') %}
+                        <hr>
+                        <div class="small text-muted">
+                            <p class="mb-1">Kalan Gün: <strong>{{ license_info.days_left }}</strong></p>
+                            <p class="mb-1">Kota: <strong>{{ license_info.used_gb }} / {{ license_info.gb_limit }} GB</strong></p>
+                            <div class="progress" style="height: 5px;">
+                              <div class="progress-bar bg-info" role="progressbar" style="width: {{ (license_info.used_gb / license_info.gb_limit) * 100 }}%"></div>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
 
-            // Arayüzü hazırla
-            document.getElementById('startBtn').disabled = true;
-            document.getElementById('startBtn').innerText = "BAĞLANIYOR...";
-            document.getElementById('logContainer').classList.remove('hidden');
-            document.getElementById('resultArea').classList.add('hidden');
-            const logsDiv = document.getElementById('logs');
-            logsDiv.innerHTML = '<div class="text-blue-400">> Sunucuya bağlanılıyor...</div>';
+                <div class="col-md-8">
+                    <div class="card p-3">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5><i class="fas fa-tasks"></i> İşlem Kuyruğu</h5>
+                            <a href="/" class="btn btn-sm btn-outline-secondary"><i class="fas fa-sync"></i> Yenile</a>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-dark table-hover table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Durum</th>
+                                        <th>Log</th>
+                                        <th>Sonuç</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for task in tasks %}
+                                    <tr>
+                                        <td><small>{{ task.task_id[:5] }}</small></td>
+                                        <td><span class="status-badge badge-{{ task.status|lower }}">{{ task.status }}</span></td>
+                                        <td>
+                                            {% if task.status == 'TAMAMLANDI' %}
+                                                <a href="{{ task.result.url }}" target="_blank" class="btn btn-sm btn-success">
+                                                    <i class="fas fa-download"></i> İNDİR
+                                                </a>
+                                            {% elif task.status == 'ISLENIYOR' %}
+                                                <small class="text-info">{{ task.log }}</small>
+                                            {% else %}
+                                                <small class="text-muted">{{ task.log }}</small>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if task.result and task.result.name %}
+                                                <small>{{ task.result.name }}</small>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            {% if not tasks %}
+                                <p class="text-center text-muted">Henüz işlem yok.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-            try {
-                const req = await fetch('/api/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({link: link})
-                });
-                const res = await req.json();
+        {% if session.get('is_admin') %}
+        <div class="tab-pane fade" id="admin">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card p-3">
+                        <h5><i class="fas fa-key"></i> Lisans Oluştur</h5>
+                        <form method="POST" action="/admin/create_license">
+                            <div class="row">
+                                <div class="col-6 mb-3">
+                                    <label>Gün Sayısı</label>
+                                    <input type="number" name="days" class="form-control" value="30">
+                                </div>
+                                <div class="col-6 mb-3">
+                                    <label>GB Sınırı</label>
+                                    <input type="number" name="gb_limit" class="form-control" value="50">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-success w-100">Lisans Üret</button>
+                        </form>
+                    </div>
+                    
+                    <div class="card p-3 mt-3">
+                        <h5><i class="fas fa-broom"></i> Sistem Kontrolü</h5>
+                        <div class="d-flex gap-2">
+                            <a href="/admin/clear_queue" class="btn btn-warning flex-fill" onclick="return confirm('Tüm kuyruk silinecek?')">
+                                <i class="fas fa-trash"></i> Listeyi Temizle
+                            </a>
+                            <a href="/admin/stop_all" class="btn btn-danger flex-fill" onclick="return confirm('İşlemler durdurulacak?')">
+                                <i class="fas fa-stop-circle"></i> İşlemleri Durdur
+                            </a>
+                        </div>
+                    </div>
+                </div>
 
-                if(res.success) {
-                    taskId = res.taskId;
-                    logsDiv.innerHTML += '<div class="text-yellow-400">> Görev Worker\\'a iletildi (ID: '+taskId.substr(0,4)+')</div>';
-                    startPolling();
-                } else {
-                    logsDiv.innerHTML += '<div class="text-red-500 font-bold">> HATA: '+res.msg+'</div>';
-                    resetUI();
-                }
-            } catch(e) {
-                logsDiv.innerHTML += '<div class="text-red-500 font-bold">> SUNUCU HATASI. SAYFAYI YENİLEYİN.</div>';
-            }
-        }
+                <div class="col-md-6">
+                    <div class="card p-3">
+                        <h5>Aktif Lisanslar</h5>
+                        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                            <table class="table table-dark table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Anahtar</th>
+                                        <th>Kalan Gün</th>
+                                        <th>Kota</th>
+                                        <th>İşlem</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for lic in licenses %}
+                                    <tr>
+                                        <td><small>{{ lic.key }}</small></td>
+                                        <td>{{ lic.days }}</td>
+                                        <td>{{ lic.used_gb }}/{{ lic.gb_limit }}</td>
+                                        <td>
+                                            <a href="/admin/del_license/{{ lic.key }}" class="text-danger"><i class="fas fa-times"></i></a>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
 
-        function startPolling() {
-            if(timer) clearInterval(timer);
-            timer = setInterval(async () => {
-                if(!taskId) return;
-                try {
-                    const req = await fetch('/api/status/' + taskId);
-                    const res = await req.json();
-
-                    if(res.log) {
-                        const logsDiv = document.getElementById('logs');
-                        // Son log ekranda yoksa ekle
-                        if(!logsDiv.lastElementChild || logsDiv.lastElementChild.innerText !== "> " + res.log) {
-                            const color = res.status.includes('HATA') ? 'text-red-500' : 'text-green-400';
-                            logsDiv.innerHTML += `<div class="${color}">> ${res.log}</div>`;
-                            logsDiv.scrollTop = logsDiv.scrollHeight;
-                        }
-                    }
-
-                    if(res.status === 'TAMAMLANDI') {
-                        clearInterval(timer);
-                        document.getElementById('logContainer').classList.add('hidden');
-                        document.getElementById('resultArea').classList.remove('hidden');
-                        document.getElementById('dlButton').href = res.result.url;
-                        document.getElementById('startBtn').innerText = "TAMAMLANDI";
-                    } else if(res.status.includes('HATA')) {
-                        clearInterval(timer);
-                        resetUI();
-                    }
-                } catch(e) {}
-            }, 1000); // 1 Saniyede bir güncelle (HIZLI)
-        }
-
-        function resetUI() {
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('startBtn').innerText = "BAŞLAT";
-        }
-    </script>
+    </div>
     {% endif %}
+</div>
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
 
-# ==================== BACKEND ====================
+# ==================== ROTALAR ====================
 @app.route('/', methods=['GET'])
 def index():
-    if not session.get('logged_in'): return render_template_string(HTML_TEMPLATE)
+    if not session.get('license_key') and not session.get('is_admin'):
+        return render_template_string(HTML_TEMPLATE)
     
-    acc_count = accounts_col.count_documents({"status": "ACTIVE"})
-    proxy_count = proxies_col.count_documents({})
-    return render_template_string(HTML_TEMPLATE, acc_count=acc_count, proxy_count=proxy_count, session=session)
+    # Verileri Çek
+    tasks = list(queue_col.find().sort('_id', -1).limit(20))
+    licenses = []
+    license_info = {}
+
+    if session.get('is_admin'):
+        licenses = list(licenses_col.find())
+    else:
+        # Kullanıcı lisans bilgilerini çek
+        lic = licenses_col.find_one({"key": session['license_key']})
+        if lic:
+            # Gün hesaplama (Basit)
+            create_date = lic.get('created_at', datetime.datetime.now())
+            days_passed = (datetime.datetime.now() - create_date).days
+            days_left = max(0, lic['days'] - days_passed)
+            
+            license_info = {
+                "days_left": days_left,
+                "used_gb": lic.get('used_gb', 0),
+                "gb_limit": lic.get('gb_limit', 0)
+            }
+
+    return render_template_string(HTML_TEMPLATE, tasks=tasks, licenses=licenses, license_info=license_info)
 
 @app.route('/login', methods=['POST'])
 def login():
-    if request.form.get('password') == ADMIN_PASSWORD:
-        session['logged_in'] = True
-    return redirect('/')
+    key = request.form.get('auth_key')
+    
+    # Admin Girişi
+    if key == ADMIN_PASS:
+        session['is_admin'] = True
+        return redirect('/')
+    
+    # Lisans Girişi
+    lic = licenses_col.find_one({"key": key})
+    if lic:
+        # Tarih kontrolü yapılabilir
+        session['license_key'] = key
+        return redirect('/')
+        
+    return "Hatalı Anahtar!", 403
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect('/')
 
-# --- KONTROL MEKANİZMASI ---
-@app.route('/reset')
-def reset_system():
-    if not session.get('logged_in'): return redirect('/')
-    # SADECE KUYRUĞU SİL, HESAPLARI SİLME!
-    queue.delete_many({}) 
-    return redirect('/')
+@app.route('/add_task', methods=['POST'])
+def add_task():
+    if not session.get('license_key') and not session.get('is_admin'):
+        return redirect('/')
+        
+    link = request.form.get('link')
+    
+    # Kota Kontrolü (Admin hariç)
+    if not session.get('is_admin'):
+        lic = licenses_col.find_one({"key": session['license_key']})
+        if lic and lic.get('used_gb', 0) >= lic.get('gb_limit', 0):
+             return "KOTA DOLDU! Lütfen paketinizi yükseltin."
 
-@app.route('/add_acc', methods=['POST'])
-def add_acc():
-    if not session.get('logged_in'): return redirect('/')
-    raw = request.form.get('data', '')
-    for line in raw.split('\n'):
-        if ':' in line:
-            u, p = line.strip().split(':', 1)
-            if not accounts_col.find_one({"email": u}):
-                accounts_col.insert_one({"email": u, "password": p, "status": "ACTIVE"})
-    return redirect('/')
-
-@app.route('/add_proxy', methods=['POST'])
-def add_proxy():
-    if not session.get('logged_in'): return redirect('/')
-    proxies_col.delete_many({}) # Temizle ve yeni yükle
-    raw = request.form.get('data', '')
-    for line in raw.split('\n'):
-        if line.strip():
-            proxies_col.insert_one({"ip": line.strip()})
-    return redirect('/')
-
-# --- API (WORKER İÇİN) ---
-@app.route('/api/start', methods=['POST'])
-def api_start():
-    if not session.get('logged_in'): return jsonify({"success": False, "msg": "Giriş yapın"})
-    link = request.json.get('link')
-    tid = str(uuid.uuid4())
-    # Worker V54'e uygun kayıt
-    queue.insert_one({
-        "task_id": tid,
+    task_id = str(uuid.uuid4())
+    
+    # DB'ye Ekle
+    queue_col.insert_one({
+        "task_id": task_id,
         "link": link,
         "status": "SIRADA",
-        "log": "Worker bekleniyor...",
-        "created_at": time.time()
+        "log": "GitHub Sunucusu Bekleniyor...",
+        "result": {},
+        "owner": session.get('license_key', 'admin'),
+        "created_at": datetime.datetime.now()
     })
-    return jsonify({"success": True, "taskId": tid})
+    
+    # GITHUB'I TETİKLE (MOTORU ÇALIŞTIR)
+    success, msg = trigger_github(link, task_id)
+    
+    if success:
+        # Kotadan düş (Tahmini 1 GB düşelim şimdilik, sonra güncellenir)
+        if not session.get('is_admin'):
+            licenses_col.update_one({"key": session['license_key']}, {"$inc": {"used_gb": 1}})
+    else:
+        queue_col.update_one({"task_id": task_id}, {"$set": {"status": "HATA", "log": msg}})
+        
+    return redirect('/')
 
-@app.route('/api/status/<tid>')
-def api_status(tid):
-    job = queue.find_one({"task_id": tid}, {"_id": 0})
-    if job: return jsonify(job)
-    return jsonify({"status": "HATA", "log": "İşlem bulunamadı"})
+# ==================== ADMIN İŞLEMLERİ ====================
+@app.route('/admin/create_license', methods=['POST'])
+def create_license():
+    if not session.get('is_admin'): return "Yetkisiz", 403
+    
+    days = int(request.form.get('days'))
+    gb = int(request.form.get('gb_limit'))
+    key = str(uuid.uuid4())[:8].upper()
+    
+    licenses_col.insert_one({
+        "key": key,
+        "days": days,
+        "gb_limit": gb,
+        "used_gb": 0,
+        "created_at": datetime.datetime.now()
+    })
+    return redirect('/')
+
+@app.route('/admin/del_license/<key>')
+def del_license(key):
+    if not session.get('is_admin'): return "Yetkisiz", 403
+    licenses_col.delete_one({"key": key})
+    return redirect('/')
+
+@app.route('/admin/clear_queue')
+def clear_queue():
+    if not session.get('is_admin'): return "Yetkisiz", 403
+    queue_col.delete_many({}) # Hepsini sil
+    return redirect('/')
+
+@app.route('/admin/stop_all')
+def stop_all():
+    if not session.get('is_admin'): return "Yetkisiz", 403
+    # Sadece durumunu HATA yapalım
+    queue_col.update_many({"status": {"$in": ["SIRADA", "ISLENIYOR"]}}, {"$set": {"status": "DURDURULDU", "log": "Admin tarafından iptal edildi."}})
+    return redirect('/')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
