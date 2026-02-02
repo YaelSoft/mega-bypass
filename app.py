@@ -1,53 +1,23 @@
 import os
 import uuid
 import datetime
-import requests
-import json
-from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
+from flask import Flask, render_template_string, request, redirect, session, flash
 from pymongo import MongoClient
-from bson.objectid import ObjectId
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # ==================== AYARLAR ====================
+# Render Environment kısmına MONGO_URI ve ADMIN_PASS eklemeyi unutma
 MONGO_URI = os.environ.get("MONGO_URI")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "Ata_Yasin536373")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO_OWNER = os.environ.get("REPO_OWNER")
-REPO_NAME = os.environ.get("REPO_NAME")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin123") # Varsayılan şifre
 
-# DB Bağlantısı
 client = MongoClient(MONGO_URI)
 db = client['mega_leech']
 queue_col = db['queue']
 licenses_col = db['licenses']
 
-# ==================== GITHUB TETİKLEYİCİ (MOTOR) ====================
-def trigger_github(link, task_id):
-    if not GITHUB_TOKEN or not REPO_OWNER:
-        return False, "GitHub Ayarları Eksik!"
-
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/dispatches"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    data = {
-        "event_type": "indir_kocum",
-        "client_payload": {"link": link, "task_id": task_id}
-    }
-    
-    try:
-        resp = requests.post(url, headers=headers, data=json.dumps(data), timeout=10)
-        if resp.status_code == 204:
-            return True, "GitHub Başlatıldı!"
-        else:
-            return False, f"GitHub Hatası: {resp.text}"
-    except Exception as e:
-        return False, str(e)
-
-# ==================== HTML TASARIM (DARK MODE - VIP) ====================
+# ==================== HTML TASARIM (DARK & GOLD VIP) ====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="tr">
@@ -56,67 +26,68 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MEGA VIP DOWNLOADER</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .form-control, .form-select { background-color: #2c2c2c; border: 1px solid #444; color: #fff; }
-        .form-control:focus { background-color: #2c2c2c; color: #fff; border-color: #0d6efd; box-shadow: none; }
-        .btn-primary { background-color: #0d6efd; border: none; }
-        .btn-danger { background-color: #dc3545; }
-        .status-badge { padding: 5px 10px; border-radius: 4px; font-size: 0.85em; font-weight: bold; }
-        .badge-sırada { background-color: #ffc107; color: #000; }
-        .badge-isleniyor { background-color: #0d6efd; color: #fff; animation: pulse 1.5s infinite; }
-        .badge-tamamlandi { background-color: #198754; color: #fff; }
-        .badge-hata { background-color: #dc3545; color: #fff; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-        .navbar { background-color: #1e1e1e; border-bottom: 1px solid #333; }
-        .log-box { background: #000; color: #0f0; font-family: monospace; padding: 10px; border-radius: 5px; max-height: 150px; overflow-y: auto; font-size: 12px; }
-        .nav-tabs .nav-link { color: #aaa; }
-        .nav-tabs .nav-link.active { background-color: #2c2c2c; color: #fff; border-color: #333; }
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; }
+        .navbar { background-color: #1e293b; border-bottom: 1px solid #334155; }
+        .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); }
+        .form-control { background-color: #0f172a; border: 1px solid #334155; color: #fff; }
+        .form-control:focus { background-color: #0f172a; color: #fff; border-color: #3b82f6; box-shadow: 0 0 0 0.25rem rgba(59, 130, 246, 0.25); }
+        .btn-primary { background-color: #3b82f6; border: none; font-weight: 600; }
+        .btn-primary:hover { background-color: #2563eb; }
+        .text-gold { color: #fbbf24; }
+        .badge-status { padding: 6px 12px; border-radius: 6px; font-size: 0.8em; font-weight: 600; }
+        .bg-sirada { background-color: #f59e0b; color: #000; }
+        .bg-isleniyor { background-color: #3b82f6; color: #fff; animation: pulse 1.5s infinite; }
+        .bg-tamamlandi { background-color: #10b981; color: #fff; }
+        .bg-hata { background-color: #ef4444; color: #fff; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+        .table-dark { background-color: #1e293b; }
+        .table-dark td, .table-dark th { border-color: #334155; }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+<nav class="navbar navbar-expand-lg navbar-dark mb-4 py-3">
   <div class="container">
-    <a class="navbar-brand" href="#"><i class="fas fa-cloud-download-alt"></i> MEGA VIP</a>
-    <div class="d-flex">
+    <a class="navbar-brand fw-bold" href="#"><i class="fas fa-bolt text-gold"></i> MEGA <span class="text-gold">VIP</span></a>
+    <div class="d-flex align-items-center">
         {% if session.get('is_admin') %}
-            <span class="badge bg-danger me-3 align-self-center">YÖNETİCİ MODU</span>
-            <a href="/logout" class="btn btn-sm btn-outline-light">Çıkış</a>
+            <span class="badge bg-danger me-3">YÖNETİCİ</span>
+            <a href="/logout" class="btn btn-sm btn-outline-danger">Çıkış</a>
         {% elif session.get('license_key') %}
-            <span class="badge bg-success me-3 align-self-center">LİSANS: {{ session['license_key'] }}</span>
-            <a href="/logout" class="btn btn-sm btn-outline-light">Çıkış</a>
+            <div class="me-3 text-end lh-1">
+                <small class="d-block text-muted">Lisans</small>
+                <span class="fw-bold text-gold">{{ session['license_key'] }}</span>
+            </div>
+            <a href="/logout" class="btn btn-sm btn-outline-secondary">Çıkış</a>
         {% endif %}
     </div>
   </div>
 </nav>
 
 <div class="container">
-    
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, message in messages %}
-          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-            {{ message }}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-          </div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
+    {% for category, message in get_flashed_messages(with_categories=true) %}
+      <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}
 
     {% if not session.get('license_key') and not session.get('is_admin') %}
     <div class="row justify-content-center mt-5">
-        <div class="col-md-6">
+        <div class="col-md-5">
             <div class="card p-4">
-                <h3 class="text-center mb-4">Sisteme Giriş</h3>
+                <div class="text-center mb-4">
+                    <i class="fas fa-user-lock fa-3x text-gold mb-3"></i>
+                    <h3>Giriş Yapın</h3>
+                    <p class="text-muted">Lisans anahtarınız veya yönetici şifreniz</p>
+                </div>
                 <form method="POST" action="/login">
                     <div class="mb-3">
-                        <label>Lisans Anahtarı veya Yönetici Şifresi</label>
-                        <input type="text" name="auth_key" class="form-control" placeholder="Anahtar giriniz..." required>
+                        <input type="text" name="auth_key" class="form-control form-control-lg text-center" placeholder="XXXX-XXXX-XXXX" required>
                     </div>
-                    <button type="submit" class="btn btn-primary w-100">Giriş Yap</button>
+                    <button type="submit" class="btn btn-primary w-100 btn-lg">Sisteme Gir</button>
                 </form>
             </div>
         </div>
@@ -124,167 +95,121 @@ HTML_TEMPLATE = """
 
     {% else %}
     
-    <ul class="nav nav-tabs mb-3" id="myTab" role="tablist">
-        <li class="nav-item">
-            <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home" type="button">🚀 İndirici</button>
-        </li>
-        {% if session.get('is_admin') %}
-        <li class="nav-item">
-            <button class="nav-link" id="admin-tab" data-bs-toggle="tab" data-bs-target="#admin" type="button">🛡️ Admin Paneli</button>
-        </li>
-        {% endif %}
-    </ul>
-
-    <div class="tab-content" id="myTabContent">
-        
-        <div class="tab-pane fade show active" id="home">
-            <div class="row">
-                <div class="col-md-4">
-                    <div class="card p-3">
-                        <h5><i class="fas fa-plus-circle"></i> Yeni İşlem</h5>
-                        <form method="POST" action="/add_task">
-                            <div class="mb-3">
-                                <label>Mega Linki</label>
-                                <input type="text" name="link" class="form-control" placeholder="https://mega.nz/..." required>
-                            </div>
-                            <div class="d-grid">
-                                <button type="submit" class="btn btn-primary">İndirmeyi Başlat</button>
-                            </div>
-                        </form>
-                        {% if not session.get('is_admin') %}
-                        <hr>
-                        <div class="small text-muted">
-                            <p class="mb-1">Kalan Gün: <strong>{{ license_info.days_left }}</strong></p>
-                            <p class="mb-1">Kota: <strong>{{ license_info.used_gb }} / {{ license_info.gb_limit }} GB</strong></p>
-                            <div class="progress" style="height: 5px;">
-                              <div class="progress-bar bg-info" role="progressbar" style="width: {{ (license_info.used_gb / license_info.gb_limit) * 100 }}%"></div>
-                            </div>
-                        </div>
-                        {% endif %}
+    <div class="row">
+        <div class="col-lg-4 mb-4">
+            <div class="card p-4 h-100">
+                <h5 class="card-title mb-4"><i class="fas fa-plus-circle text-primary"></i> Yeni İndirme</h5>
+                <form method="POST" action="/add_task">
+                    <div class="mb-3">
+                        <label class="form-label text-muted">Mega.nz Linki</label>
+                        <input type="text" name="link" class="form-control" placeholder="https://mega.nz/..." required>
                     </div>
-                </div>
+                    <button type="submit" class="btn btn-primary w-100"><i class="fas fa-cloud-download-alt"></i> Başlat</button>
+                </form>
 
-                <div class="col-md-8">
-                    <div class="card p-3">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h5><i class="fas fa-tasks"></i> İşlem Kuyruğu</h5>
-                            <a href="/" class="btn btn-sm btn-outline-secondary"><i class="fas fa-sync"></i> Yenile</a>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-dark table-hover table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>Durum</th>
-                                        <th>Log</th>
-                                        <th>Sonuç</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for task in tasks %}
-                                    <tr>
-                                        <td><small>{{ task.task_id[:5] }}</small></td>
-                                        <td><span class="status-badge badge-{{ task.status|lower }}">{{ task.status }}</span></td>
-                                        <td>
-                                            {% if task.status == 'TAMAMLANDI' %}
-                                                <a href="{{ task.result.url }}" target="_blank" class="btn btn-sm btn-success">
-                                                    <i class="fas fa-download"></i> İNDİR
-                                                </a>
-                                            {% elif task.status == 'ISLENIYOR' %}
-                                                <small class="text-info">{{ task.log }}</small>
-                                            {% else %}
-                                                <small class="text-muted">{{ task.log }}</small>
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            {% if task.result and task.result.name %}
-                                                <small>{{ task.result.name }}</small>
-                                            {% endif %}
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
+                {% if not session.get('is_admin') and license_info %}
+                <hr class="my-4 border-secondary">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Kalan Gün:</span>
+                    <span class="fw-bold">{{ license_info.days_left }}</span>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Kota:</span>
+                    <span class="fw-bold">{{ license_info.used_gb }} / {{ license_info.gb_limit }} GB</span>
+                </div>
+                <div class="progress bg-dark" style="height: 6px;">
+                    <div class="progress-bar bg-warning" role="progressbar" style="width: {{ (license_info.used_gb / license_info.gb_limit) * 100 }}%"></div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card p-4">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h5 class="card-title m-0"><i class="fas fa-list text-primary"></i> İşlem Listesi</h5>
+                    <a href="/" class="btn btn-sm btn-outline-light"><i class="fas fa-sync"></i></a>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-dark table-hover align-middle">
+                        <thead>
+                            <tr class="text-muted small text-uppercase">
+                                <th>Durum</th>
+                                <th>Bilgi</th>
+                                <th class="text-end">İşlem</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for task in tasks %}
+                            <tr>
+                                <td style="width: 120px;">
+                                    <span class="badge-status bg-{{ task.status|lower }}">{{ task.status }}</span>
+                                </td>
+                                <td>
+                                    <div class="small text-muted">{{ task.task_id[:8] }}</div>
+                                    <div>{{ task.log }}</div>
+                                </td>
+                                <td class="text-end">
+                                    {% if task.status == 'TAMAMLANDI' and task.result.url %}
+                                        <a href="{{ task.result.url }}" target="_blank" class="btn btn-sm btn-success fw-bold">
+                                            <i class="fas fa-download"></i> İNDİR
+                                        </a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="3" class="text-center text-muted py-4">Henüz işlem yok.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if session.get('is_admin') %}
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card p-4 border-danger">
+                <h5 class="text-danger mb-3"><i class="fas fa-shield-alt"></i> Yönetici Paneli</h5>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <form method="POST" action="/admin/create_license" class="p-3 bg-dark rounded">
+                            <h6>Lisans Üret</h6>
+                            <div class="input-group mb-2">
+                                <input type="number" name="days" class="form-control" placeholder="Gün" value="30">
+                                <input type="number" name="gb" class="form-control" placeholder="GB" value="50">
+                            </div>
+                            <button class="btn btn-sm btn-danger w-100">Oluştur</button>
+                        </form>
+                    </div>
+                    <div class="col-md-8">
+                        <h6>Aktif Lisanslar</h6>
+                        <div style="max-height: 150px; overflow-y: auto;">
+                            <table class="table table-sm table-dark">
+                                {% for lic in all_licenses %}
+                                <tr>
+                                    <td><code class="text-gold">{{ lic.key }}</code></td>
+                                    <td>{{ lic.days }} Gün</td>
+                                    <td>{{ lic.used_gb }}/{{ lic.gb_limit }} GB</td>
+                                    <td class="text-end"><a href="/admin/delete/{{ lic.key }}" class="text-danger">&times;</a></td>
+                                </tr>
+                                {% endfor %}
                             </table>
-                            {% if not tasks %}
-                                <p class="text-center text-muted">Henüz işlem yok.</p>
-                            {% endif %}
                         </div>
+                    </div>
+                    <div class="col-12 mt-2">
+                         <a href="/admin/clear_queue" class="btn btn-sm btn-outline-warning">Kuyruğu Temizle</a>
                     </div>
                 </div>
             </div>
         </div>
-
-        {% if session.get('is_admin') %}
-        <div class="tab-pane fade" id="admin">
-            <div class="row">
-                <div class="col-md-6">
-                    <div class="card p-3">
-                        <h5><i class="fas fa-key"></i> Lisans Oluştur</h5>
-                        <form method="POST" action="/admin/create_license">
-                            <div class="row">
-                                <div class="col-6 mb-3">
-                                    <label>Gün Sayısı</label>
-                                    <input type="number" name="days" class="form-control" value="30">
-                                </div>
-                                <div class="col-6 mb-3">
-                                    <label>GB Sınırı</label>
-                                    <input type="number" name="gb_limit" class="form-control" value="50">
-                                </div>
-                            </div>
-                            <button type="submit" class="btn btn-success w-100">Lisans Üret</button>
-                        </form>
-                    </div>
-                    
-                    <div class="card p-3 mt-3">
-                        <h5><i class="fas fa-broom"></i> Sistem Kontrolü</h5>
-                        <div class="d-flex gap-2">
-                            <a href="/admin/clear_queue" class="btn btn-warning flex-fill" onclick="return confirm('Tüm kuyruk silinecek?')">
-                                <i class="fas fa-trash"></i> Listeyi Temizle
-                            </a>
-                            <a href="/admin/stop_all" class="btn btn-danger flex-fill" onclick="return confirm('İşlemler durdurulacak?')">
-                                <i class="fas fa-stop-circle"></i> İşlemleri Durdur
-                            </a>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-md-6">
-                    <div class="card p-3">
-                        <h5>Aktif Lisanslar</h5>
-                        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
-                            <table class="table table-dark table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Anahtar</th>
-                                        <th>Kalan Gün</th>
-                                        <th>Kota</th>
-                                        <th>İşlem</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for lic in licenses %}
-                                    <tr>
-                                        <td><small>{{ lic.key }}</small></td>
-                                        <td>{{ lic.days }}</td>
-                                        <td>{{ lic.used_gb }}/{{ lic.gb_limit }}</td>
-                                        <td>
-                                            <a href="/admin/del_license/{{ lic.key }}" class="text-danger"><i class="fas fa-times"></i></a>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-
     </div>
     {% endif %}
-</div>
 
+    {% endif %}
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
@@ -297,46 +222,43 @@ def index():
         return render_template_string(HTML_TEMPLATE)
     
     # Verileri Çek
-    tasks = list(queue_col.find().sort('_id', -1).limit(20))
-    licenses = []
-    license_info = {}
-
+    filter_query = {}
+    if not session.get('is_admin'):
+        filter_query["owner"] = session['license_key'] # Sadece kendi dosyaları
+        
+    tasks = list(queue_col.find(filter_query).sort('_id', -1).limit(20))
+    
+    license_info = None
+    all_licenses = []
+    
     if session.get('is_admin'):
-        licenses = list(licenses_col.find())
+        all_licenses = list(licenses_col.find())
     else:
-        # Kullanıcı lisans bilgilerini çek
         lic = licenses_col.find_one({"key": session['license_key']})
         if lic:
-            # Gün hesaplama (Basit)
-            create_date = lic.get('created_at', datetime.datetime.now())
-            days_passed = (datetime.datetime.now() - create_date).days
-            days_left = max(0, lic['days'] - days_passed)
-            
+            days_passed = (datetime.datetime.now() - lic['created_at']).days
             license_info = {
-                "days_left": days_left,
+                "days_left": max(0, lic['days'] - days_passed),
                 "used_gb": lic.get('used_gb', 0),
                 "gb_limit": lic.get('gb_limit', 0)
             }
 
-    return render_template_string(HTML_TEMPLATE, tasks=tasks, licenses=licenses, license_info=license_info)
+    return render_template_string(HTML_TEMPLATE, tasks=tasks, license_info=license_info, all_licenses=all_licenses)
 
 @app.route('/login', methods=['POST'])
 def login():
     key = request.form.get('auth_key')
-    
-    # Admin Girişi
     if key == ADMIN_PASS:
         session['is_admin'] = True
         return redirect('/')
     
-    # Lisans Girişi
     lic = licenses_col.find_one({"key": key})
     if lic:
-        # Tarih kontrolü yapılabilir
         session['license_key'] = key
         return redirect('/')
-        
-    return "Hatalı Anahtar!", 403
+    
+    flash("Geçersiz Anahtar!", "danger")
+    return redirect('/')
 
 @app.route('/logout')
 def logout():
@@ -345,77 +267,59 @@ def logout():
 
 @app.route('/add_task', methods=['POST'])
 def add_task():
-    if not session.get('license_key') and not session.get('is_admin'):
-        return redirect('/')
-        
+    if not session.get('license_key') and not session.get('is_admin'): return redirect('/')
+    
     link = request.form.get('link')
     
-    # Kota Kontrolü (Admin hariç)
+    # Lisans Kontrolü
     if not session.get('is_admin'):
         lic = licenses_col.find_one({"key": session['license_key']})
-        if lic and lic.get('used_gb', 0) >= lic.get('gb_limit', 0):
-             return "KOTA DOLDU! Lütfen paketinizi yükseltin."
+        if lic['used_gb'] >= lic['gb_limit']:
+            flash("Kota Doldu!", "danger")
+            return redirect('/')
 
+    # Görevi Kuyruğa Ekle
     task_id = str(uuid.uuid4())
-    
-    # DB'ye Ekle
     queue_col.insert_one({
         "task_id": task_id,
         "link": link,
         "status": "SIRADA",
-        "log": "GitHub Sunucusu Bekleniyor...",
+        "log": "Sunucu bekleniyor...",
         "result": {},
         "owner": session.get('license_key', 'admin'),
         "created_at": datetime.datetime.now()
     })
     
-    # GITHUB'I TETİKLE (MOTORU ÇALIŞTIR)
-    success, msg = trigger_github(link, task_id)
-    
-    if success:
-        # Kotadan düş (Tahmini 1 GB düşelim şimdilik, sonra güncellenir)
-        if not session.get('is_admin'):
-            licenses_col.update_one({"key": session['license_key']}, {"$inc": {"used_gb": 1}})
-    else:
-        queue_col.update_one({"task_id": task_id}, {"$set": {"status": "HATA", "log": msg}})
+    # Kotadan düş (Tahmini)
+    if not session.get('is_admin'):
+        licenses_col.update_one({"key": session['license_key']}, {"$inc": {"used_gb": 1}})
         
     return redirect('/')
 
-# ==================== ADMIN İŞLEMLERİ ====================
+# Admin İşlemleri
 @app.route('/admin/create_license', methods=['POST'])
-def create_license():
-    if not session.get('is_admin'): return "Yetkisiz", 403
-    
-    days = int(request.form.get('days'))
-    gb = int(request.form.get('gb_limit'))
-    key = str(uuid.uuid4())[:8].upper()
-    
+def create_lic():
+    if not session.get('is_admin'): return "403", 403
+    key = str(uuid.uuid4())[:12].upper()
     licenses_col.insert_one({
         "key": key,
-        "days": days,
-        "gb_limit": gb,
+        "days": int(request.form.get('days')),
+        "gb_limit": int(request.form.get('gb')),
         "used_gb": 0,
         "created_at": datetime.datetime.now()
     })
     return redirect('/')
 
-@app.route('/admin/del_license/<key>')
-def del_license(key):
-    if not session.get('is_admin'): return "Yetkisiz", 403
+@app.route('/admin/delete/<key>')
+def del_lic(key):
+    if not session.get('is_admin'): return "403", 403
     licenses_col.delete_one({"key": key})
     return redirect('/')
 
 @app.route('/admin/clear_queue')
 def clear_queue():
-    if not session.get('is_admin'): return "Yetkisiz", 403
-    queue_col.delete_many({}) # Hepsini sil
-    return redirect('/')
-
-@app.route('/admin/stop_all')
-def stop_all():
-    if not session.get('is_admin'): return "Yetkisiz", 403
-    # Sadece durumunu HATA yapalım
-    queue_col.update_many({"status": {"$in": ["SIRADA", "ISLENIYOR"]}}, {"$set": {"status": "DURDURULDU", "log": "Admin tarafından iptal edildi."}})
+    if not session.get('is_admin'): return "403", 403
+    queue_col.delete_many({})
     return redirect('/')
 
 if __name__ == '__main__':
